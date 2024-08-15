@@ -44,7 +44,7 @@ app.get('/oauth2callback', async (req, res) => {
     const { tokens } = await oAuth2Client.getToken(code);
     oAuth2Client.setCredentials(tokens);
     fs.writeFileSync('tokens.json', JSON.stringify(tokens));
-    res.redirect('https://task-ruby-three.vercel.app/oauth2callback/emails')
+    res.redirect('https://task-ruby-three.vercel.app/emails')
   } catch (error) {
     console.error('Error retrieving access token', error);
     res.status(500).send('Error during authentication');
