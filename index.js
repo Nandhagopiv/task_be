@@ -12,12 +12,12 @@ app.use(cors());
 app.use(express.json()); // To parse JSON bodies
 
 // Load credentials
-// const credentials = JSON.parse(fs.readFileSync('./client_secret.json'));
-// const { client_id, client_secret, redirect_uris } = credentials.web;
+const credentials = JSON.parse(fs.readFileSync('./client_secret.json'));
+const { client_id, client_secret, redirect_uris } = credentials.web;
 const oAuth2Client = new google.auth.OAuth2(
-  '615653653748-rs8ucsqssethjqae09cp8t7m0jrlisme.apps.googleusercontent.com',
-  "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",
-  'http://localhost:3001/oauth2callback'
+  client_id,
+  client_secret,
+  redirect_uris[0]
 );
 
 const uri = 'mongodb+srv://nandhagopy:123@cluster0.cozk4.mongodb.net/'; // Replace with your MongoDB URI
