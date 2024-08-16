@@ -86,6 +86,14 @@ app.get('/emails', async (req, res) => {
     const db = client.db('gmail_attachments');
     const emailCollection = db.collection('emails');
 
+    // Drop the old collection
+    await emailCollection.drop().catch(err => {
+      if (err.codeName !== 'NamespaceNotFound') {
+        // Ignore error if collection does not exist
+        console.error('Error dropping collection:', err);
+      }
+    });
+
     // Fetch and process each message in parallel
     const emails = await Promise.all(messages.map(async (message) => {
       try {
