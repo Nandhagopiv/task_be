@@ -4,12 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const MongoClient = require('mongodb').MongoClient;
 const cors = require('cors');
+const { promisify } = require('util');
+const stream = require('stream');
 
 const app = express();
 const port = 3001;
 
 app.use(cors());
-app.use(express.json()); // To parse JSON bodies
+app.use(express.json());
 
 // Load credentials
 const credentials = JSON.parse(fs.readFileSync('./client_secret.json'));
@@ -21,8 +23,7 @@ const oAuth2Client = new google.auth.OAuth2(
 );
 
 const uri = 'mongodb+srv://nandhagopy:123@cluster0.cozk4.mongodb.net/'; // Replace with your MongoDB URI
-const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true });
-client.connect();
+const client = new MongoClient(uri);
 
 // Define scopes
 const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
@@ -81,46 +82,39 @@ app.get('/emails', async (req, res) => {
     }
 
     // Connect to MongoDB
+    await client.connect();
     const db = client.db('gmail_attachments');
     const emailCollection = db.collection('emails');
 
-    // Fetch and process each message
-    const emails = [];
-    for (const message of messages) {
-      const msg = await gmail.users.messages.get({ userId: 'me', id: message.id });
-      const messageData = msg.data;
+    // Fetch and process each message in parallel
+    const emails = await Promise.all(messages.map(async (message) => {
+      try {
+        const msg = await gmail.users.messages.get({ userId: 'me', id: message.id });
+        const messageData = msg.data;
 
-      const headers = messageData.payload.headers;
-      const fromHeader = headers.find(header => header.name === 'From');
-      const senderName = fromHeader ? fromHeader.value.split('<')[0].trim() : 'Unknown';
+        const headers = messageData.payload.headers;
+        const fromHeader = headers.find(header => header.name === 'From');
+        const senderName = fromHeader ? fromHeader.value.split('<')[0].trim() : 'Unknown';
 
-      await emailCollection.updateOne(
-        { id: message.id },
-        {
-          $set: {
-            threadId: message.threadId,
-            snippet: messageData.snippet,
-            payload: messageData.payload,
-            internalDate: messageData.internalDate,
-            sender: senderName,
-            attachments: [] // Initialize empty attachments array
-          }
-        },
-        { upsert: true }
-      );
+        // Update email data
+        await emailCollection.updateOne(
+          { id: message.id },
+          {
+            $set: {
+              threadId: message.threadId,
+              snippet: messageData.snippet,
+              payload: messageData.payload,
+              internalDate: messageData.internalDate,
+              sender: senderName,
+              attachments: [] // Initialize empty attachments array
+            }
+          },
+          { upsert: true }
+        );
 
-      emails.push({
-        id: message.id,
-        threadId: message.threadId,
-        snippet: messageData.snippet,
-        internalDate: messageData.internalDate,
-        sender: senderName
-      })
-
-      // Handle attachments
-      const parts = messageData.payload.parts;
-      if (parts) {
-        for (const part of parts) {
+        // Handle attachments
+        const parts = messageData.payload.parts || [];
+        const attachments = await Promise.all(parts.map(async (part) => {
           if (part.filename && part.body.attachmentId) {
             try {
               const attachment = await gmail.users.messages.attachments.get({
@@ -132,23 +126,34 @@ app.get('/emails', async (req, res) => {
               const buffer = Buffer.from(data, 'base64');
 
               const attachmentPath = path.join(__dirname, 'attachments', part.filename);
-              fs.writeFileSync(attachmentPath, buffer);
-              emails.push({
-                attachments: { filename: part.filename, path: attachmentPath }
-              });
+              await promisify(fs.writeFile)(attachmentPath, buffer);
 
               await emailCollection.updateOne(
                 { id: message.id },
                 { $push: { attachments: { filename: part.filename, path: attachmentPath } } }
               );
+
+              return { filename: part.filename, path: attachmentPath };
             } catch (attachmentError) {
               console.error(`Error fetching attachment ${part.filename}:`, attachmentError);
             }
           }
-        }
+        }));
+
+        return {
+          id: message.id,
+          threadId: message.threadId,
+          snippet: messageData.snippet,
+          internalDate: messageData.internalDate,
+          sender: senderName,
+          attachments: attachments.filter(Boolean) // Remove undefined values
+        };
+      } catch (messageError) {
+        console.error('Error fetching message:', messageError);
       }
-    }
-    res.send(emails)
+    }));
+
+    res.send(emails.filter(Boolean)); // Remove undefined values
   } catch (error) {
     console.error('Error fetching emails:', error);
     res.status(500).send('Failed to fetch emails');
@@ -156,30 +161,42 @@ app.get('/emails', async (req, res) => {
 });
 
 app.get('/attachments', async (req, res) => {
-  const db = client.db('gmail_attachments');
-  const emailCollection = db.collection('emails');
+  try {
+    await client.connect();
+    const db = client.db('gmail_attachments');
+    const emailCollection = db.collection('emails');
 
-  const data = await emailCollection.find().toArray()
-  const tempArr = data.filter((mail) => {
-    if (mail.attachments.length === 0) {
-      return false
-    } else {
-      return true
-    }
-  })
+    const data = await emailCollection.find({ 'attachments.0': { $exists: true } }).toArray();
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching attachments:', error);
+    res.status(500).send('Failed to fetch attachments');
+  }
+});
 
-  res.json(tempArr)
+app.get('/viewattachments', async (req, res) => {
+  const {path} = req.query
+  console.log(`./attachments/${path}`);
+  
+  const binaryFile = new Binary(Buffer.from(fs.readFileSync(`./attachments/${path}`)))
+  
+  res.send(binaryFile)
 })
 
 app.get('/getmail', async (req, res) => {
-  const {id} = req.query
-  
-  const db = client.db('gmail_attachments');
-  const emailCollection = db.collection('emails');
+  const { id } = req.query;
+  try {
+    await client.connect();
+    const db = client.db('gmail_attachments');
+    const emailCollection = db.collection('emails');
 
-  const data = await emailCollection.findOne({id:id})
-  res.json(data)
-})
+    const data = await emailCollection.findOne({ id: id });
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching email:', error);
+    res.status(500).send('Failed to fetch email');
+  }
+});
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
