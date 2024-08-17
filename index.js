@@ -4,14 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const MongoClient = require('mongodb').MongoClient;
 const cors = require('cors');
-const { promisify } = require('util');
-const stream = require('stream');
+const { promisify } = require('util')
 
 const app = express();
 const port = 3001;
 
 app.use(cors());
 app.use(express.json());
+app.use('/attachments', express.static(path.join(__dirname, 'attachments')));
 
 // Load credentials
 const credentials = JSON.parse(fs.readFileSync('./client_secret.json'));
@@ -182,14 +182,34 @@ app.get('/attachments', async (req, res) => {
   }
 });
 
-app.get('/viewattachments', async (req, res) => {
-  const {path} = req.query
-  console.log(`./attachments/${path}`);
-  
-  const binaryFile = new Binary(Buffer.from(fs.readFileSync(`./attachments/${path}`)))
-  
-  res.send(binaryFile)
-})
+app.get('/viewattachments', (req, res) => {
+    const { filename } = req.query;
+    const filePath = path.join(__dirname, 'attachments', filename);
+    
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            return res.status(404).send('File not found');
+        }
+
+        const ext = path.extname(filename).toLowerCase();
+        let mimeType = 'application/octet-stream';
+
+        if (ext === '.pdf') {
+            mimeType = 'application/pdf';
+        } else if (ext === '.jpg' || ext === '.jpeg') {
+            mimeType = 'image/jpeg';
+        } else if (ext === '.png') {
+            mimeType = 'image/png';
+        }
+
+        const base64Data = Buffer.from(data).toString('base64');
+
+        res.json({
+            path: base64Data,
+            type: mimeType
+        });
+    });
+});
 
 app.get('/getmail', async (req, res) => {
   const { id } = req.query;
